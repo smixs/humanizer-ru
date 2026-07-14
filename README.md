@@ -2,6 +2,8 @@
 
 # Humanizer RU
 
+[![Установки на skills.sh](https://skills.sh/b/smixs/humanizer-ru)](https://skills.sh/smixs/humanizer-ru)
+
 Skill для AI-агентов: Claude Code, Codex, OpenClaw, Hermes и любых других, читающих формат SKILL.md. Удаляет признаки AI-генерации из русского текста: канцелярит, штампы ChatGPT и Claude, длинные тире, «не просто… а», рубленый драматизм, техножаргон. 32 паттерна, жёсткие запреты и защита от переусердствования.
 
 Подходит для постов, статей, лендингов, документации и коммерческих текстов: гуманизация AI-текста, редактура по Ильяхову, чистка слопа и воды. Текст перестаёт палиться как сгенерированный и звучит как написанный человеком.
@@ -25,20 +27,39 @@ Skill для AI-агентов: Claude Code, Codex, OpenClaw, Hermes и любы
 
 ## Установка
 
-**Claude Code:**
+Рекомендуемый способ - через [skills.sh](https://skills.sh/smixs/humanizer-ru), открытый маркетплейс агентских скиллов. Одна команда ставит skill в любой из 70+ поддерживаемых агентов: Claude Code, Codex, Cursor, OpenClaw, Hermes, Gemini CLI, OpenCode, Windsurf и другие.
+
+```bash
+npx skills add smixs/humanizer-ru
+```
+
+CLI сам определит установленных агентов и спросит, куда ставить. Полезные флаги:
+
+```bash
+# глобально, для всех проектов
+npx skills add smixs/humanizer-ru -g
+
+# в конкретные агенты
+npx skills add smixs/humanizer-ru -a claude-code -a codex
+
+# без вопросов, для CI
+npx skills add smixs/humanizer-ru -g -y
+```
+
+Обновление до свежей версии: `npx skills update humanizer-ru`.
+
+**Вручную (Claude Code):**
 
 ```bash
 git clone https://github.com/smixs/humanizer-ru.git ~/.claude/skills/humanizer-ru
 ```
 
-Или вручную:
+**Совсем вручную:** скачайте `SKILL.md` и положите в папку скиллов агента (`~/.claude/skills/`, `~/.codex/skills/`, `~/.openclaw/skills/`, `~/.hermes/skills/`). Файл самодостаточен: обычный markdown, без зависимостей и скриптов.
 
 ```bash
 mkdir -p ~/.claude/skills/humanizer-ru
 curl -o ~/.claude/skills/humanizer-ru/SKILL.md https://raw.githubusercontent.com/smixs/humanizer-ru/main/SKILL.md
 ```
-
-**Codex, OpenClaw, Hermes и другие агенты:** положите `SKILL.md` в папку скиллов агента (например, `~/.codex/skills/humanizer-ru/`) или подключите его содержимое как системную инструкцию. Файл самодостаточен: обычный markdown, без зависимостей и скриптов.
 
 ## Использование
 
