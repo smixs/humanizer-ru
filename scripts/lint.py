@@ -1,17 +1,40 @@
 #!/usr/bin/env python3
-"""Детерминированный линтер AI-слопа для humanizer-ru (v2).
+"""Детерминированный линтер AI-слопа для humanizer-ru (v3).
 
 Использование:
     python3 scripts/lint.py file.md      # или stdin: python3 scripts/lint.py < file.md
     python3 scripts/lint.py --self-test
 
-ERROR  = жёсткие запреты SKILL.md (гейт: exit 1, текст не готов).
+ERROR  = жёсткие запреты SKILL.md + артефакты копипаста из чат-ботов
+         (гейт: exit 1, текст не готов).
 WARN   = маркеры паттернов и метрики ритма (оценивать кластерами, exit 0).
 Вердикт по severity: errors*3 + warnings -> clean (0-3) / review (4-10) / rewrite (11+).
 Линт гоняется ТОЛЬКО по чистовому тексту - без changelog и цитат «до».
+Артефакт в бэктиках не считается: так артефакты цитируют, а не копипастят.
 """
 import re
 import sys
+
+# --- класс A: артефакты копипаста из чат-ботов (мгновенный вердикт) ---
+# Порт из Vladimir-Human/humanizer-ru (MIT); regex там проверены fixtures.
+# Гоняются по сырому тексту (включая URL), но без code-блоков и бэктиков.
+ARTIFACTS = [
+    ("A oaicite-сноска", re.compile(r":contentReference\[oaicite:\d+\]|oai_citation:\d+‡|\boaicite:\d+")),
+    ("A turn-метка", re.compile(r"\bturn\d+(?:search|file|fetch|image|news|video|ref)\d+|citeturn")),
+    ("A utm/referrer чат-бота", re.compile(r"utm_source=(?:chatgpt|copilot)\.com|referrer=grok\.com")),
+    ("A grok-карточка", re.compile(r"grok_card://|grok_render_citation_card_json|<grok-card\b")),
+    ("A gemini-цитата", re.compile(r"vertexaisearch\S*grounding-api-redirect|\[cite_start\]|\[cite:\s*\d+|\[span_\d+\]")),
+    ("A внутренняя сноска", re.compile(r"【\d+†[^】]*】|\]\(sandbox:/mnt/data/")),
+    ("A остаток размышлений", re.compile(r"</?think>")),
+    ("A perplexity-upload", re.compile(r"ppl-ai-file-upload")),
+    ("A placeholder", re.compile(r"INSERT_SOURCE_URL|PASTE_\w+_URL_HERE|\bURL_HERE\b|\b20\d\d-XX-XX\b")),
+    ("A PUA-метка", re.compile(r"[-]")),
+]
+CODE_STRIP = re.compile(r"```.*?```|`[^`\n]+`", re.S)  # цитируемые артефакты не считаем
+# символы нулевой ширины - класс B (бывают от CMS и рассылок), поэтому WARN;
+# ZWJ (U+200D) внутри эмодзи-последовательности - норма, ловим только вне эмодзи
+EMOJI_CH = "[\U0001F000-\U0001FAFF☀-➿⬀-⯿️\U0001F3FB-\U0001F3FF]"
+ZERO_WIDTH = re.compile(r"[​‌⁠﻿]|(?<!%s)‍|‍(?!%s)" % (EMOJI_CH, EMOJI_CH))
 
 # --- жёсткие запреты (номера паттернов из references/patterns.md) ---
 ERRORS = [
@@ -46,13 +69,17 @@ WARN_PHRASES = [
     # 22 стоп-слова
     "в современном мире", "на сегодняшний день", "в настоящее время", "как известно",
     "не секрет, что", "ни для кого не секрет", "каждый из нас",
-    # 25 псевдоглубина
+    # 25 псевдоглубина (+ faux-insight сетапы)
     "по сути", "если копнуть глубже", "глубинная проблема", "настоящий вопрос в том",
-    "в конечном счёте",
+    "в конечном счёте", "все упускают", "большинство упускает", "никто не расскажет",
+    "никто не говорит о", "главная ошибка большинства", "чего вам не расскажут",
     # 26 анонсы
     "давайте разберёмся", "погрузимся в", "вот что нужно знать", "без лишних слов",
     # 29 фальшивая доверительность
     "скажу прямо", "давайте начистоту", "вот в чём штука", "если по-честному",
+    # 37 псевдо-терапевтический регистр
+    "и это нормально", "и это окей", "вы не одиноки", "давайте признаем",
+    "позвольте себе",
     # 31 резюме
     "подводя итог", "в заключение", "резюмируя",
     # 32 спекуляции
@@ -61,6 +88,15 @@ WARN_PHRASES = [
     "кроме того", "более того", "также стоит", "ещё один аспект", "ещё одним",
 ]
 WARN_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
+# 19: три и более смягчения в одном предложении = каскад (одно-два - норма речи)
+SOFTENERS = ("возможно", "вероятно", "по-видимому", "как правило", "в некоторых случаях",
+             "скорее всего", "при определённых условиях", "обычно", "в зависимости от",
+             "в большинстве случаев", "потенциально")
+# colon reveal: «подводка: драматичное раскрытие» - только явные формы,
+# чтобы не бить по спискам, меткам и обычным двоеточиям
+COLON_REVEAL = re.compile(
+    r"(?:[Сс]амое (?:интересное|главное|важное)|[Лл]учшая часть|[Гг]лавная деталь|"
+    r"[Фф]ишка в том|[Дд]еталь, которая [^:\n]{0,35})\s*:")
 BOLD_SPAN = re.compile(r"\*\*[^*\n]+\*\*")
 INFORMAL = re.compile(r"\b(ты|вы|тебе|вам|твой|твоя|ваш|ваша|вами|тобой)\b", re.I)
 # ponytail: стем-эвристика по глагольным суффиксам, морфологию не тянем;
@@ -97,6 +133,19 @@ def verb_stems(sentence):
 
 def lint(text):
     findings = []  # (kind, line_no, rule, excerpt)
+    text = text.lstrip("﻿")  # BOM - артефакт кодировки, не текста
+
+    # класс A: по сырому тексту (URL нужны для utm/referrer), но без бэктиков
+    raw = CODE_STRIP.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    for i, line in enumerate(strip_frontmatter(raw.splitlines()), 1):
+        for rule, rx in ARTIFACTS:
+            for m in rx.finditer(line):
+                ctx = line[max(0, m.start() - 25):m.end() + 25].strip()
+                findings.append(("ERROR", i, rule, ctx))
+        if ZERO_WIDTH.search(line):
+            findings.append(("WARN", i, "B символ нулевой ширины",
+                             "невидимый символ (CMS и рассылки тоже их ставят - проверь источник)"))
+
     clean = STRIP.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     lines = strip_frontmatter(clean.splitlines())
 
@@ -115,9 +164,18 @@ def lint(text):
                 findings.append(("WARN", i, phrase, scan.strip()[:70]))
         if WARN_EMOJI.search(scan):
             findings.append(("WARN", i, "21 эмодзи", scan.strip()[:70]))
+        if COLON_REVEAL.search(scan):
+            findings.append(("WARN", i, "двоеточие-подводка", scan.strip()[:70]))
 
     sents = prose_sentences(lines)
     lengths = [len(s.split()) for s in sents]
+
+    # 19: каскад смягчений - три и более уклончивых слова в одном предложении
+    for s in sents:
+        low = s.lower()
+        hits = sum(low.count(w) for w in SOFTENERS)
+        if hits >= 3:
+            findings.append(("WARN", 0, "19 каскад смягчений", f"{hits} смягчения: {s[:60]}"))
 
     # 33: повтор глагольной основы в соседних предложениях
     for a, b in zip(range(len(sents) - 1), range(1, len(sents))):
@@ -189,6 +247,37 @@ def self_test():
 
     mono = " ".join(["Это предложение содержит ровно семь слов подряд." ] * 12)
     assert any("ритм" in f[2] for f in lint(mono)), lint(mono)
+
+    # класс A: артефакты копипаста ловятся, в том числе внутри URL
+    art = ("Рынок вырос :contentReference[oaicite:0]{index=0}, детали turn0search3, "
+           "см. https://example.com/?utm_source=chatgpt.com и [cite: 8].")
+    kinds = [f[2] for f in lint(art) if f[0] == "ERROR"]
+    assert any("oaicite" in k for k in kinds), kinds
+    assert any("turn" in k for k in kinds), kinds
+    assert any("utm" in k for k in kinds), kinds
+    assert any("gemini" in k for k in kinds), kinds
+
+    # артефакт в бэктиках - цитирование, не копипаст
+    art_ok = "Статья разбирает метки `turn0search0` и `</think>` как признаки ИИ."
+    assert not [f for f in lint(art_ok) if f[0] == "ERROR"], lint(art_ok)
+
+    # ZWJ внутри эмодзи - норма; голый zero-width - WARN
+    fam = "Семья 👨‍👩‍👧 поехала на дачу."
+    assert not [f for f in lint(fam) if "нулевой ширины" in f[2]], lint(fam)
+    zw = "Обычный текст с невидимым​символом внутри."
+    assert any("нулевой ширины" in f[2] for f in lint(zw)), lint(zw)
+
+    # 19: каскад смягчений - три в одном предложении да, одно - нет
+    soft = "Возможно, в некоторых случаях это, скорее всего, сработает."
+    assert any("каскад" in f[2] for f in lint(soft)), lint(soft)
+    soft_ok = "Возможно, это сработает."
+    assert not [f for f in lint(soft_ok) if "каскад" in f[2]], lint(soft_ok)
+
+    # двоеточие-подводка
+    cr = "Самое интересное: агент учится сам."
+    assert any("подводка" in f[2] for f in lint(cr)), lint(cr)
+    cr_ok = "Список покупок: хлеб, молоко."
+    assert not [f for f in lint(cr_ok) if "подводка" in f[2]], lint(cr_ok)
 
     print("self-test: OK")
 
